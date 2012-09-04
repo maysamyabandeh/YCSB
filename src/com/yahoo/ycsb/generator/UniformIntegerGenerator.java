@@ -35,7 +35,9 @@ public class UniformIntegerGenerator extends IntegerGenerator
 	 */
 	public UniformIntegerGenerator(int lb, int ub)
 	{
-		_random=new Random();
+		long seed = System.currentTimeMillis();
+		seed *= Thread.currentThread().getId();
+		_random=new Random(seed);
 		_lb=lb;
 		_ub=ub;
 		_interval=_ub-_lb+1;

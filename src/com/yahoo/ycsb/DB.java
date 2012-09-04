@@ -18,9 +18,11 @@
 package com.yahoo.ycsb;
 
 import java.util.HashMap;
+import java.util.Map;
 import java.util.Properties;
 import java.util.Set;
 import java.util.Vector;
+import java.util.List;
 
 /**
  * A layer for accessing a database to be benchmarked. Each thread in the client
@@ -103,6 +105,7 @@ public abstract class DB
 	 * @return Zero on success, a non-zero error code on error.  See this class's description for a discussion of error codes.
 	 */
 	public abstract int scan(String table, String startkey, int recordcount, Set<String> fields, Vector<HashMap<String,String>> result);
+	public int scanWrite(String table, String startkey, int recordcount, Set<String> fields, HashMap<String,String> values) {return 1;}
 	
 	/**
 	 * Update a record in the database. Any field/value pairs in the specified values HashMap will be written into the record with the specified
@@ -114,6 +117,20 @@ public abstract class DB
 	 * @return Zero on success, a non-zero error code on error.  See this class's description for a discussion of error codes.
 	 */
 	public abstract int update(String table, String key, HashMap<String,String> values);
+
+    	/**
+	 * Update a record in the database. Any field/value pairs in the specified values HashMap will be written into the record with the specified
+	 * record key, overwriting any existing values with the same field name.
+	 *
+	 * @param table The name of the table
+	 * @param key The record key of the record to write.
+	 * @param values A HashMap of field/value pairs to update in the record
+	 * @return Zero on success, a non-zero error code on error.  See this class's description for a discussion of error codes.
+	 */
+    public int readMulti(String table, List<String> key, Set<String> fields, HashMap<String,Map<String,String>> result) { return 1;}
+    public int updateMulti(String table, List<String> key, HashMap<String,String> values) { return 1;}
+    public int complex(String table, List<String> readKeys, Set<String> fields, HashMap<String,Map<String,String>> readResult, 
+		List<String> writeKeys, HashMap<String,String> writeValues) { return 1;}
 
 	/**
 	 * Insert a record in the database. Any field/value pairs in the specified values HashMap will be written into the record with the specified

@@ -30,9 +30,13 @@ import com.yahoo.ycsb.generator.UniformIntegerGenerator;
 import com.yahoo.ycsb.generator.ZipfianGenerator;
 import com.yahoo.ycsb.measurements.Measurements;
 
+import java.util.Map;
+import java.util.Set;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Vector;
+import java.util.List;
+import java.util.ArrayList;
 
 /**
  * The core benchmark scenario. Represents a set of clients doing simple CRUD operations. The relative 
@@ -170,7 +174,23 @@ public class CoreWorkload extends Workload
 	 * The default proportion of transactions that are scans.
 	 */
 	public static final String READMODIFYWRITE_PROPORTION_PROPERTY_DEFAULT="0.0";
+
+    	/**
+	 * The name of the property for the proportion of transactions that are scans.
+	 */
+    public static final String MULTI_UPDATE_PROPORTION_PROPERTY="multiupdateproportion";
+    public static final String COMPLEX_PROPORTION_PROPERTY="complexproportion";
+    public static final String MULTI_READ_PROPORTION_PROPERTY="multireadproportion";
+    public static final String SCAN_WRITE_PROPORTION_PROPERTY="scanwriteproportion";
 	
+	/**
+	 * The default proportion of transactions that are scans.
+	 */
+	public static final String MULTI_UPDATE_PROPORTION_PROPERTY_DEFAULT="0.0";
+	public static final String COMPLEX_PROPORTION_PROPERTY_DEFAULT="0.0";
+	public static final String MULTI_READ_PROPORTION_PROPERTY_DEFAULT="0.0";
+	public static final String SCAN_WRITE_PROPORTION_PROPERTY_DEFAULT="0.0";
+
 	/**
 	 * The name of the property for the the distribution of requests across the keyspace. Options are "uniform", "zipfian" and "latest"
 	 */
@@ -185,12 +205,13 @@ public class CoreWorkload extends Workload
 	 * The name of the property for the max scan length (number of records)
 	 */
 	public static final String MAX_SCAN_LENGTH_PROPERTY="maxscanlength";
-	
+
 	/**
 	 * The default max scan length.
 	 */
 	public static final String MAX_SCAN_LENGTH_PROPERTY_DEFAULT="1000";
-	
+
+
 	/**
 	 * The name of the property for the scan length distribution. Options are "uniform" and "zipfian" (favoring short scans)
 	 */
@@ -200,7 +221,12 @@ public class CoreWorkload extends Workload
 	 * The default max scan length.
 	 */
 	public static final String SCAN_LENGTH_DISTRIBUTION_PROPERTY_DEFAULT="uniform";
-	
+
+        public static final String MAX_TRANSACTION_LENGTH_PROPERTY="maxtransactionlength";
+        public static final String MAX_TRANSACTION_LENGTH_PROPERTY_DEFAULT="100";
+        public static final String TRANSACTION_LENGTH_DISTRIBUTION_PROPERTY="transactionlengthdistribution";
+	public static final String TRANSACTION_LENGTH_DISTRIBUTION_PROPERTY_DEFAULT="uniform";
+
 	/**
 	 * The name of the property for the order to insert records. Options are "ordered" or "hashed"
 	 */
@@ -236,12 +262,22 @@ public class CoreWorkload extends Workload
 	DiscreteGenerator operationchooser;
 
 	IntegerGenerator keychooser;
+	//use it for status oracle partitions
+	IntegerGenerator[] partitionedKeychoosers;
+	Vector<SeqGenerator> keychoosersPool;
+	IntegerGenerator partitionRandomSelector;
+	IntegerGenerator globalTxnRndSelector;
+	GlobalSeqGenerator globalSeqGenerator;
+	int globalchance;//chance of a global txn %
 
 	Generator fieldchooser;
 
 	CounterGenerator transactioninsertkeysequence;
 	
 	IntegerGenerator scanlength;
+    	IntegerGenerator transactionlength;
+
+	DiscreteGenerator complexchooser;
 	
 	boolean orderedinserts;
 
@@ -261,10 +297,20 @@ public class CoreWorkload extends Workload
 		double insertproportion=Double.parseDouble(p.getProperty(INSERT_PROPORTION_PROPERTY,INSERT_PROPORTION_PROPERTY_DEFAULT));
 		double scanproportion=Double.parseDouble(p.getProperty(SCAN_PROPORTION_PROPERTY,SCAN_PROPORTION_PROPERTY_DEFAULT));
 		double readmodifywriteproportion=Double.parseDouble(p.getProperty(READMODIFYWRITE_PROPORTION_PROPERTY,READMODIFYWRITE_PROPORTION_PROPERTY_DEFAULT));
+		double multiupdateproportion=Double.parseDouble(p.getProperty(MULTI_UPDATE_PROPORTION_PROPERTY,MULTI_UPDATE_PROPORTION_PROPERTY_DEFAULT));
+		double multireadproportion=Double.parseDouble(p.getProperty(MULTI_READ_PROPORTION_PROPERTY,MULTI_READ_PROPORTION_PROPERTY_DEFAULT));
+		double scanwriteproportion=Double.parseDouble(p.getProperty(SCAN_WRITE_PROPORTION_PROPERTY,SCAN_WRITE_PROPORTION_PROPERTY_DEFAULT));
+		double complexproportion=Double.parseDouble(p.getProperty(COMPLEX_PROPORTION_PROPERTY,COMPLEX_PROPORTION_PROPERTY_DEFAULT));
 		recordcount=Integer.parseInt(p.getProperty(Client.RECORD_COUNT_PROPERTY));
 		String requestdistrib=p.getProperty(REQUEST_DISTRIBUTION_PROPERTY,REQUEST_DISTRIBUTION_PROPERTY_DEFAULT);
 		int maxscanlength=Integer.parseInt(p.getProperty(MAX_SCAN_LENGTH_PROPERTY,MAX_SCAN_LENGTH_PROPERTY_DEFAULT));
 		String scanlengthdistrib=p.getProperty(SCAN_LENGTH_DISTRIBUTION_PROPERTY,SCAN_LENGTH_DISTRIBUTION_PROPERTY_DEFAULT);
+		
+		complexchooser = new DiscreteGenerator();
+		complexchooser.addValue(0.5, "READ");
+		complexchooser.addValue(0.5, "WRITE");
+		int maxtransactionlength=Integer.parseInt(p.getProperty(MAX_TRANSACTION_LENGTH_PROPERTY,MAX_TRANSACTION_LENGTH_PROPERTY_DEFAULT));
+		String transactionlengthdistrib=p.getProperty(TRANSACTION_LENGTH_DISTRIBUTION_PROPERTY,TRANSACTION_LENGTH_DISTRIBUTION_PROPERTY_DEFAULT);
 		
 		int insertstart=Integer.parseInt(p.getProperty(INSERT_START_PROPERTY,INSERT_START_PROPERTY_DEFAULT));
 		
@@ -307,10 +353,51 @@ public class CoreWorkload extends Workload
 			operationchooser.addValue(readmodifywriteproportion,"READMODIFYWRITE");
 		}
 
+		if (multiupdateproportion>0)
+		{
+			operationchooser.addValue(multiupdateproportion,"MULTIUPDATE");
+		}
+
+		if (complexproportion>0)
+		{
+			operationchooser.addValue(complexproportion,"COMPLEX");
+		}
+
+		if (multireadproportion>0)
+		{
+			operationchooser.addValue(multireadproportion,"MULTIREAD");
+		}
+
+		if (scanwriteproportion>0)
+		{
+			operationchooser.addValue(scanwriteproportion,"SCANWRITE");
+		}
+
+		//read parameters related to global transactions
+		globalchance=Integer.parseInt(p.getProperty("globalchance","-1"));
+		System.out.println("Global Txn Chance: " + globalchance + "%");
+		int partitions=Integer.parseInt(p.getProperty("partitions","1"));
+		System.out.println("Number of partitions: " + partitions);
+		partitionedKeychoosers = new IntegerGenerator[partitions];
+		int partitionSize = recordcount / partitions;
+		partitionRandomSelector=new UniformIntegerGenerator(0,partitions-1);
+		globalTxnRndSelector=new UniformIntegerGenerator(0,100);//100% the total probability
+		keychoosersPool = new Vector<SeqGenerator>();
+		globalSeqGenerator = new GlobalSeqGenerator();
+
 		transactioninsertkeysequence=new CounterGenerator(recordcount);
 		if (requestdistrib.compareTo("uniform")==0)
 		{
 			keychooser=new UniformIntegerGenerator(0,recordcount-1);
+			//initialize the key generators related to global transactions
+			int end = 0;
+			for (int i = 1; i <= partitions; i++) {
+				int start = end;
+				end = start + partitionSize;
+				if (i == partitions)
+					end = recordcount;
+				partitionedKeychoosers[i-1] = new UniformIntegerGenerator(start,end-1);
+			}
 		}
 		else if (requestdistrib.compareTo("zipfian")==0)
 		{
@@ -325,10 +412,29 @@ public class CoreWorkload extends Workload
 			int expectednewkeys=(int)(((double)opcount)*insertproportion*2.0); //2 is fudge factor
 			
 			keychooser=new ScrambledZipfianGenerator(recordcount+expectednewkeys);
+			//initialize the key generators related to global transactions
+			int end = 0;
+			for (int i = 1; i <= partitions; i++) {
+				int start = end;
+				end = start + partitionSize;
+				if (i == partitions)
+					end = recordcount + expectednewkeys;
+				partitionedKeychoosers[i-1] = new ScrambledZipfianGenerator(start,end-1);
+			}
 		}
 		else if (requestdistrib.compareTo("latest")==0)
 		{
 			keychooser=new SkewedLatestGenerator(transactioninsertkeysequence);
+			//initialize the key generators related to global transactions
+			int end = 0;
+			for (int i = 1; i <= partitions; i++) {
+				int start = end;
+				end = start + partitionSize;
+				if (i == partitions)
+					end = recordcount;
+				//Here partitioning does not help since it is supposed to be around latest partition anyway
+				partitionedKeychoosers[i-1] = new SkewedLatestGenerator(transactioninsertkeysequence);
+			}
 		}
 		else if (requestdistrib.equals("hotspot")) 
 		{
@@ -338,6 +444,16 @@ public class CoreWorkload extends Workload
           HOTSPOT_OPN_FRACTION, HOTSPOT_OPN_FRACTION_DEFAULT));
       keychooser = new HotspotIntegerGenerator(0, recordcount - 1, 
           hotsetfraction, hotopnfraction);
+			//initialize the key generators related to global transactions
+			int end = 0;
+			for (int i = 1; i <= partitions; i++) {
+				int start = end;
+				end = start + partitionSize;
+				if (i == partitions)
+					end = recordcount;
+				partitionedKeychoosers[i-1] = new HotspotIntegerGenerator(start,end-1,
+						hotsetfraction, hotopnfraction);
+			}
     }
 		else
 		{
@@ -358,6 +474,20 @@ public class CoreWorkload extends Workload
 		{
 			throw new WorkloadException("Distribution \""+scanlengthdistrib+"\" not allowed for scan length");
 		}
+
+		
+		if (transactionlengthdistrib.compareTo("uniform")==0)
+		{
+			transactionlength=new UniformIntegerGenerator(1,maxtransactionlength);
+		}
+		else if (transactionlengthdistrib.compareTo("zipfian")==0)
+		{
+			transactionlength=new ZipfianGenerator(1,maxtransactionlength);
+		}
+		else
+		{
+			throw new WorkloadException("Distribution \""+transactionlengthdistrib+"\" not allowed for transaction length");
+		}
 	}
 
 	/**
@@ -373,7 +503,8 @@ public class CoreWorkload extends Workload
 		{
 			keynum=Utils.hash(keynum);
 		}
-		String dbkey="user"+keynum;
+		//String dbkey="user"+keynum;
+		String dbkey=makeKey(keynum);
 		HashMap<String,String> values=new HashMap<String,String>();
 		for (int i=0; i<fieldcount; i++)
 		{
@@ -393,41 +524,173 @@ public class CoreWorkload extends Workload
 	 * other, and it will be difficult to reach the target throughput. Ideally, this function would have no side
 	 * effects other than DB operations.
 	 */
-	public boolean doTransaction(DB db, Object threadstate)
+	public boolean doTransaction(DB db, Object threadState)
 	{
 		String op=operationchooser.nextString();
 
 		if (op.compareTo("READ")==0)
 		{
-			doTransactionRead(db);
+			doTransactionRead(db, threadState);
 		}
 		else if (op.compareTo("UPDATE")==0)
 		{
-			doTransactionUpdate(db);
+			doTransactionUpdate(db, threadState);
 		}
 		else if (op.compareTo("INSERT")==0)
 		{
-			doTransactionInsert(db);
+			doTransactionInsert(db, threadState);
 		}
 		else if (op.compareTo("SCAN")==0)
 		{
-			doTransactionScan(db);
+			doTransactionScan(db, threadState);
 		}
+ 		else if (op.compareTo("MULTIUPDATE")==0)
+		{
+			doTransactionMultiUpdate(db, threadState);
+		}
+ 		else if (op.compareTo("MULTIREAD")==0)
+		{
+			doTransactionMultiRead(db, threadState);
+		}
+ 		else if (op.compareTo("COMPLEX")==0)
+		{
+			doTransactionComplex(db, threadState);
+		}
+ 		else if (op.compareTo("SCANWRITE")==0)
+		{
+			doTransactionScanWrite(db, threadState);
+		}
+
 		else
 		{
-			doTransactionReadModifyWrite(db);
+			doTransactionReadModifyWrite(db, threadState);
 		}
 		
 		return true;
 	}
 
-	public void doTransactionRead(DB db)
+	//return a thread-specific state
+	@Override
+	public Object initThread(Properties p, int mythreadid, int threadcount) throws WorkloadException
 	{
+		ThreadWorkloadState state = new ThreadWorkloadState();
+		state.partition = partitionRandomSelector.nextInt();
+		return state;
+	}
+
+	class ThreadWorkloadState {
+		int intGeneratorIndex = -1;//use this to have a separate generator per each thread
+		int partition = -1;//the assigned partition to this client
+		boolean lastTxnWasGlobal = false;//use it to rerun a global txn
+		@Override
+		public String toString() {
+			return "ThreadWorkloadState: partition " + partition;
+		}
+	}
+
+	String format = null;
+	//get a key id and covert it to string
+	String makeKey(int keynum) {
+		//return "user"+keynum;
+		if (format == null) {
+			int digits = Integer.toString(recordcount).length();
+			format = "user%0" + digits + "d";
+		}
+		return String.format(format,keynum);
+	}
+
+	//A class to generate sequentail row ids
+   //It is used to get the highest throughput out of Hbase
+	class SeqGenerator extends IntegerGenerator {
+		public int nextInt() {
+			int lastint = lastInt();
+			++lastint;
+			if (lastint == recordcount)//if it is wrapped around
+				lastint = 0;
+			setLastInt(lastint);
+			return lastint;
+		}
+	}
+
+	//This class generates global row ids but still it sticks to the sequential order history
+	class GlobalSeqGenerator extends IntegerGenerator {
+		public int nextInt() {
+			int index = keychooser.nextInt();
+			index = index % keychoosersPool.size();
+			//TODO: use a dedicated random generator
+			SeqGenerator seqGenerator = keychoosersPool.elementAt(index);
+			return seqGenerator.nextInt();
+		}
+	}
+
+	/**
+	 * randomly choose a partition key generator or the global key generator
+	 */
+		/*
+	IntegerGenerator selectAKeyChooser(Object threadState) {
+		if (partitionedKeychoosers.length == 1) {//no need for partitioning
+			return keychooser;
+		}
+		if (tws.lastTxnWasGlobal) {//redo global txn
+			tws.lastTxnWasGlobal = false;//reset it
+			//System.out.println("GLOBAL");
+			return keychooser;
+		}
+		if (globalTxnRndSelector.nextInt() < globalchance) {
+			tws.lastTxnWasGlobal = true;
+			//System.out.println("GLOBAL");
+			return keychooser;
+		}
+			//System.out.println("LOCAL " + tws.partition);
+		return partitionedKeychoosers[tws.partition];
+		//return keychooser;
+	};
+		*/
+	//In this implementation, since we use sequentail rows instead of random, we do not have to 
+	//partition the keys based on status oracle partitions. Instread we partition them based on 
+	//the number of clients, so that the load on HBase will be balanced. This automatically balances
+	//the load on the status oracles as well (while keeping the traffic parition-local)
+	IntegerGenerator selectAKeyChooser(Object threadState) {
+		ThreadWorkloadState tws = (ThreadWorkloadState)threadState;
+		if (tws.intGeneratorIndex == -1) {
+			newSeqGenerator(tws);
+		}
+		IntegerGenerator localIntGenerator = keychoosersPool.elementAt(tws.intGeneratorIndex);
+		if (partitionedKeychoosers.length == 1) {//no need for partitioning
+			return localIntGenerator;
+		}
+		if (tws.lastTxnWasGlobal) {//redo global txn
+			tws.lastTxnWasGlobal = false;//reset it
+			//System.out.println("GLOBAL");
+			return globalSeqGenerator;
+		}
+		if (globalTxnRndSelector.nextInt() < globalchance) {
+			tws.lastTxnWasGlobal = true;
+			return globalSeqGenerator;
+		}
+		return localIntGenerator;
+		//return keychooser;
+	};
+
+	synchronized void newSeqGenerator(ThreadWorkloadState tws) {
+		SeqGenerator intGenerator = new SeqGenerator();
+		int randInt = keychooser.nextInt();
+		intGenerator.setLastInt(randInt);
+		int index = keychoosersPool.size();
+		keychoosersPool.add(intGenerator);
+		tws.intGeneratorIndex = index;
+	}
+
+	public void doTransactionRead(DB db, Object threadState)
+	{
+		//to enable keys that are likely to be limited to a partition
+		IntegerGenerator selectedKeychooser = selectAKeyChooser(threadState);
 		//choose a random key
 		int keynum;
 		do
 		{
-			keynum=keychooser.nextInt();
+			keynum=selectedKeychooser.nextInt();
+			//System.out.println("KEY: " + keynum + " " + threadState);
 		}
 		while (keynum>transactioninsertkeysequence.lastInt());
 		
@@ -435,7 +698,8 @@ public class CoreWorkload extends Workload
 		{
 			keynum=Utils.hash(keynum);
 		}
-		String keyname="user"+keynum;
+		//String keyname="user"+keynum;
+		String keyname=makeKey(keynum);
 
 		HashSet<String> fields=null;
 
@@ -451,13 +715,16 @@ public class CoreWorkload extends Workload
 		db.read(table,keyname,fields,new HashMap<String,String>());
 	}
 	
-	public void doTransactionReadModifyWrite(DB db)
+	public void doTransactionReadModifyWrite(DB db, Object threadState)
 	{
+		//to enable keys that are likely to be limited to a partition
+		IntegerGenerator selectedKeychooser = selectAKeyChooser(threadState);
 		//choose a random key
 		int keynum;
 		do
 		{
-			keynum=keychooser.nextInt();
+			keynum=selectedKeychooser.nextInt();
+			//System.out.println("KEY: " + keynum + " " + threadState);
 		}
 		while (keynum>transactioninsertkeysequence.lastInt());
 		
@@ -465,7 +732,8 @@ public class CoreWorkload extends Workload
 		{
 			keynum=Utils.hash(keynum);
 		}
-		String keyname="user"+keynum;
+		//String keyname="user"+keynum;
+		String keyname=makeKey(keynum);
 
 		HashSet<String> fields=null;
 
@@ -511,13 +779,16 @@ public class CoreWorkload extends Workload
 		Measurements.getMeasurements().measure("READ-MODIFY-WRITE", (int)(en-st));
 	}
 	
-	public void doTransactionScan(DB db)
+	public void doTransactionScanWrite(DB db, Object threadState)
 	{
+		//to enable keys that are likely to be limited to a partition
+		IntegerGenerator selectedKeychooser = selectAKeyChooser(threadState);
 		//choose a random key
 		int keynum;
 		do
 		{
-			keynum=keychooser.nextInt();
+			keynum=selectedKeychooser.nextInt();
+			//System.out.println("KEY: " + keynum + " " + threadState);
 		}
 		while (keynum>transactioninsertkeysequence.lastInt());
 
@@ -525,7 +796,58 @@ public class CoreWorkload extends Workload
 		{
 			keynum=Utils.hash(keynum);
 		}
-		String startkeyname="user"+keynum;
+		//String startkeyname="user"+keynum;
+		String startkeyname=makeKey(keynum);
+		
+		//choose a random scan length
+		int len=scanlength.nextInt();
+
+		HashSet<String> fields=null;
+		HashMap<String,String> values=new HashMap<String,String>();
+
+		if (!readallfields)
+		{
+			//read a random field  
+			String fieldname="field"+fieldchooser.nextString();
+
+			fields=new HashSet<String>();
+			fields.add(fieldname);
+
+		   String data=Utils.ASCIIString(fieldlength);		   
+		   values.put(fieldname,data);
+		} else {
+		   //new data for all the fields
+		   for (int i=0; i<fieldcount; i++)
+		   {
+		      String fieldname="field"+i;
+		      String data=Utils.ASCIIString(fieldlength);		   
+		      values.put(fieldname,data);
+		   }
+		}
+
+		db.scanWrite(table,startkeyname,len,fields,values);
+	}
+
+	
+	public void doTransactionScan(DB db, Object threadState)
+	{
+		//to enable keys that are likely to be limited to a partition
+		IntegerGenerator selectedKeychooser = selectAKeyChooser(threadState);
+		//choose a random key
+		int keynum;
+		do
+		{
+			keynum=selectedKeychooser.nextInt();
+			//System.out.println("KEY: " + keynum + " " + threadState);
+		}
+		while (keynum>transactioninsertkeysequence.lastInt());
+
+		if (!orderedinserts)
+		{
+			keynum=Utils.hash(keynum);
+		}
+		//String startkeyname="user"+keynum;
+		String startkeyname=makeKey(keynum);
 		
 		//choose a random scan length
 		int len=scanlength.nextInt();
@@ -544,13 +866,16 @@ public class CoreWorkload extends Workload
 		db.scan(table,startkeyname,len,fields,new Vector<HashMap<String,String>>());
 	}
 
-	public void doTransactionUpdate(DB db)
+	public void doTransactionUpdate(DB db, Object threadState)
 	{
+		//to enable keys that are likely to be limited to a partition
+		IntegerGenerator selectedKeychooser = selectAKeyChooser(threadState);
 		//choose a random key
 		int keynum;
 		do
 		{
-			keynum=keychooser.nextInt();
+			keynum=selectedKeychooser.nextInt();
+			//System.out.println("KEY: " + keynum + " " + threadState);
 		}
 		while (keynum>transactioninsertkeysequence.lastInt());
 
@@ -558,7 +883,8 @@ public class CoreWorkload extends Workload
 		{
 			keynum=Utils.hash(keynum);
 		}
-		String keyname="user"+keynum;
+		//String keyname="user"+keynum;
+		String keyname=makeKey(keynum);
 
 		HashMap<String,String> values=new HashMap<String,String>();
 
@@ -583,7 +909,163 @@ public class CoreWorkload extends Workload
 		db.update(table,keyname,values);
 	}
 
-	public void doTransactionInsert(DB db)
+	public void doTransactionMultiRead(DB db, Object threadState)
+	{
+		//choose a random scan length
+		int len=transactionlength.nextInt();
+
+		//to enable keys that are likely to be limited to a partition
+		IntegerGenerator selectedKeychooser = selectAKeyChooser(threadState);
+
+		List<String> keys = new ArrayList<String>(len);
+		for (int i = 0; i < len; i++) {
+			//choose a random key
+			int keynum;
+			do
+			{
+				keynum=selectedKeychooser.nextInt();
+			//System.out.println("KEY: " + keynum + " " + threadState);
+			}
+			while (keynum>transactioninsertkeysequence.lastInt());
+
+			if (!orderedinserts)
+			{
+				keynum=Utils.hash(keynum);
+			}
+			//String keyname="user"+keynum;
+			String keyname=makeKey(keynum);
+			keys.add(keyname);
+		}
+
+		HashSet<String> fields=null;
+
+		if (!readallfields)
+		{
+			//read a random field  
+			String fieldname="field"+fieldchooser.nextString();
+
+			fields=new HashSet<String>();
+			fields.add(fieldname);
+		}
+
+		db.readMulti(table,keys,fields,new HashMap<String,Map<String,String>>());
+	}
+
+	public void doTransactionComplex(DB db, Object threadState)
+	{
+		//choose a random scan length
+		int len=transactionlength.nextInt();
+		//to enable keys that are likely to be limited to a partition
+		IntegerGenerator selectedKeychooser = selectAKeyChooser(threadState);
+
+		List<String> readKeys = new ArrayList<String>();
+		List<String> writeKeys = new ArrayList<String>();
+		for (int i = 0; i < len; i++) {
+		    //choose a random key
+		    int keynum;
+		    do
+			{
+				keynum=selectedKeychooser.nextInt();
+			//System.out.println("KEY: " + keynum + " " + threadState);
+			}
+		    while (keynum>transactioninsertkeysequence.lastInt());
+		    
+		    if (!orderedinserts)
+			{
+			    keynum=Utils.hash(keynum);
+			}
+		    if (complexchooser.nextString().compareTo("READ") == 0) {
+			    //readKeys.add("user"+keynum);
+			    readKeys.add(makeKey(keynum));
+		    } else {
+			    //writeKeys.add("user"+keynum);
+			    writeKeys.add(makeKey(keynum));
+		    }
+		}		    
+
+		HashSet<String> fields=null;
+
+		if (!readallfields)
+		{
+			//read a random field  
+			String fieldname="field"+fieldchooser.nextString();
+
+			fields=new HashSet<String>();
+			fields.add(fieldname);
+		}
+
+		HashMap<String,String> values=new HashMap<String,String>();
+
+		if (writeallfields)
+		{
+		   //new data for all the fields
+		   for (int i=0; i<fieldcount; i++)
+		   {
+		      String fieldname="field"+i;
+		      String data=Utils.ASCIIString(fieldlength);		   
+		      values.put(fieldname,data);
+		   }
+		}
+		else
+		{
+		   //update a random field
+		   String fieldname="field"+fieldchooser.nextString();
+		   String data=Utils.ASCIIString(fieldlength);		   
+		   values.put(fieldname,data);
+		}
+
+		db.complex(table,readKeys,fields, new HashMap<String,Map<String,String>>(), writeKeys, values);
+	}
+	public void doTransactionMultiUpdate(DB db, Object threadState)
+	{
+	    //choose a random scan length
+	    int len=transactionlength.nextInt();
+		 //to enable keys that are likely to be limited to a partition
+		 IntegerGenerator selectedKeychooser = selectAKeyChooser(threadState);
+
+		List<String> keys = new ArrayList<String>(len);
+		for (int i = 0; i < len; i++) {
+		    //choose a random key
+		    int keynum;
+		    do
+			{
+				keynum=selectedKeychooser.nextInt();
+			//System.out.println("KEY: " + keynum + " " + threadState);
+			}
+		    while (keynum>transactioninsertkeysequence.lastInt());
+		    
+		    if (!orderedinserts)
+			{
+			    keynum=Utils.hash(keynum);
+			}
+		    //keys.add("user"+keynum);
+		    keys.add(makeKey(keynum));
+		}		    
+
+		HashMap<String,String> values=new HashMap<String,String>();
+
+		if (writeallfields)
+		{
+		   //new data for all the fields
+		   for (int i=0; i<fieldcount; i++)
+		   {
+		      String fieldname="field"+i;
+		      String data=Utils.ASCIIString(fieldlength);		   
+		      values.put(fieldname,data);
+		   }
+		}
+		else
+		{
+		   //update a random field
+		   String fieldname="field"+fieldchooser.nextString();
+		   String data=Utils.ASCIIString(fieldlength);		   
+		   values.put(fieldname,data);
+		}
+
+		db.updateMulti(table,keys,values);
+	}
+
+	public void doTransactionInsert(DB db, Object threadState)
 	{
 		//choose the next key
 		int keynum=transactioninsertkeysequence.nextInt();
@@ -591,7 +1073,8 @@ public class CoreWorkload extends Workload
 		{
 			keynum=Utils.hash(keynum);
 		}
-		String dbkey="user"+keynum;
+		//String dbkey="user"+keynum;
+		String dbkey=makeKey(keynum);
 		
 		HashMap<String,String> values=new HashMap<String,String>();
 		for (int i=0; i<fieldcount; i++)

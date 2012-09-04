@@ -18,9 +18,11 @@
 package com.yahoo.ycsb;
 
 import java.util.HashMap;
+import java.util.Map;
 import java.util.Properties;
 import java.util.Set;
 import java.util.Vector;
+import java.util.List;
 
 import com.yahoo.ycsb.measurements.Measurements;
 
@@ -110,6 +112,15 @@ public class DBWrapper extends DB
 		_measurements.reportReturnCode("SCAN",res);
 		return res;
 	}
+	public int scanWrite(String table, String startkey, int recordcount, Set<String> fields, HashMap<String,String> values)
+	{
+		long st=System.currentTimeMillis();
+		int res=_db.scanWrite(table,startkey,recordcount,fields,values);
+		long en=System.currentTimeMillis();
+		_measurements.measure("SCANWRITE",(int)(en-st));
+		_measurements.reportReturnCode("SCANWRITE",res);
+		return res;
+	}
 	
 	/**
 	 * Update a record in the database. Any field/value pairs in the specified values HashMap will be written into the record with the specified
@@ -127,6 +138,37 @@ public class DBWrapper extends DB
 		long en=System.currentTimeMillis();
 		_measurements.measure("UPDATE",(int)(en-st));
 		_measurements.reportReturnCode("UPDATE",res);
+		return res;
+	}
+
+	public int complex(String table, List<String> readKeys, Set<String> fields, HashMap<String,Map<String,String>> readResult, 
+			List<String> writeKeys, HashMap<String,String> writeValues)
+	{
+		long st=System.currentTimeMillis();
+		int res=_db.complex(table,readKeys,fields,readResult,writeKeys,writeValues);
+		long en=System.currentTimeMillis();
+		_measurements.measure("COMPLEX",(int)(en-st));
+		_measurements.reportReturnCode("COMPLEX",res);
+		return res;
+	}
+
+    	public int updateMulti(String table, List<String> keys, HashMap<String,String> values)
+	{
+		long st=System.currentTimeMillis();
+		int res=_db.updateMulti(table,keys,values);
+		long en=System.currentTimeMillis();
+		_measurements.measure("MULTIUPDATE",(int)(en-st));
+		_measurements.reportReturnCode("MULTIUPDATE",res);
+		return res;
+	}
+
+	public int readMulti(String table, List<String> key, Set<String> fields, HashMap<String,Map<String,String>> result)
+	{
+		long st=System.currentTimeMillis();
+		int res=_db.readMulti(table,key,fields,result);
+		long en=System.currentTimeMillis();
+		_measurements.measure("MULTIREAD",(int)(en-st));
+		_measurements.reportReturnCode("MULTIREAD",res);
 		return res;
 	}
 

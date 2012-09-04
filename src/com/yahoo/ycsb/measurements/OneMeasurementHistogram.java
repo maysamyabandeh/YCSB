@@ -159,7 +159,7 @@ public class OneMeasurementHistogram extends OneMeasurement
 		double report=((double)windowtotallatency)/((double)windowoperations);
 		windowtotallatency=0;
 		windowoperations=0;
-		return "["+getName()+" AverageLatency(ms)="+d.format(report)+"]";
+		return "\n["+getName()+" AverageLatency(ms)="+d.format(report)+"]";
 	}
 
 }
