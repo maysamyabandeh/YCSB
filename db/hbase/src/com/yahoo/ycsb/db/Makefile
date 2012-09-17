@@ -26,7 +26,7 @@ HBASEJAR=${LIB}/hbase-0.94.1.jar
 all:
 	#ensure thatn the jar files exist
 	ls ${YCSBJAR} ${OMIDJAR} ${HADOOPJAR} ${HBASEJAR} > /dev/null
-	javac -classpath ${YCSBJAR}:${OMIDJAR}:${HADOOPJAR}:${HBASEJAR} TranHBaseClient.java
+	javac -classpath ${YCSBJAR}:${OMIDJAR}:${HADOOPJAR}:${HBASEJAR} HBaseClient.java
 	mkdir -p ${CLASSDIR}
 	mv *class ${CLASSDIR} 
 	#you need to make ycsb.jar again
