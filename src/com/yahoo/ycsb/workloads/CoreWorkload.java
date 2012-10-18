@@ -262,13 +262,51 @@ public class CoreWorkload extends Workload
 	DiscreteGenerator operationchooser;
 
 	IntegerGenerator keychooser;
-	//use it for status oracle partitions
+   /**
+	 * The following is used for status oracle partitions in MegaOmid
+    * We have two implementations, one is active at a time.
+    * some variables are used only by one implementation.
+    */
+
+   /**
+    * In MegaOmid, we generate a partitioned workload.
+    * We need a keychooser for each partition
+    * The following gives N random generator, one for each partition
+    * Each random generator works on a seperate partition
+    */
 	IntegerGenerator[] partitionedKeychoosers;
+
+   /**
+    * To squeeze more performance from HBase, we need a sequential workload.
+    * In this case, instead of using partitionedKeychoosers, we use a pool of
+    * sequentail integer generators
+    * Each seqGenerator operates on the entire key range. 
+    * This is ok due to the sequential key generation: 
+    * they mostly stay in one partition.
+    */
 	Vector<SeqGenerator> keychoosersPool;
+
+   /**
+    * At the start, we assign a random partition to each thread.
+    * The partition is selected by the following random generator
+    */
 	IntegerGenerator partitionRandomSelector;
+
+   /**
+    * We randomly switch from local to global transactions
+    * with a probability of globalchance (out of 100)
+    * The following generates a random number for this purpose.
+    */
 	IntegerGenerator globalTxnRndSelector;
-	GlobalSeqGenerator globalSeqGenerator;
 	int globalchance;//chance of a global txn %
+
+   /**
+    * When we switch to global transactions, we use globalSeqGenerator to select
+    * the next row id. It selects one of the seqGenerators from the pool and
+    * get the next int from it.
+    */
+	GlobalSeqGenerator globalSeqGenerator;
+   //end of MegaOmid variables
 
 	Generator fieldchooser;
 
@@ -373,22 +411,26 @@ public class CoreWorkload extends Workload
 			operationchooser.addValue(scanwriteproportion,"SCANWRITE");
 		}
 
-		//read parameters related to global transactions
-		globalchance=Integer.parseInt(p.getProperty("globalchance","-1"));
-		System.out.println("Global Txn Chance: " + globalchance + "%");
-		int partitions=Integer.parseInt(p.getProperty("partitions","1"));
-		System.out.println("Number of partitions: " + partitions);
-		partitionedKeychoosers = new IntegerGenerator[partitions];
-		int partitionSize = recordcount / partitions;
-		partitionRandomSelector=new UniformIntegerGenerator(0,partitions-1);
-		globalTxnRndSelector=new UniformIntegerGenerator(0,100);//100% the total probability
-		keychoosersPool = new Vector<SeqGenerator>();
-		globalSeqGenerator = new GlobalSeqGenerator();
+		/** 
+       * read parameters related to global transactions in MegaOmid
+       * also initialize the related variables
+       */
+      globalchance = Integer.parseInt(p.getProperty("globalchance","-1"));
+      System.out.println("Global Txn Chance: " + globalchance + "%");
+      globalTxnRndSelector = new UniformIntegerGenerator(0,100);//100% the total probability
+      int partitions = Integer.parseInt(p.getProperty("partitions","1"));
+      System.out.println("Number of partitions: " + partitions);
+      partitionedKeychoosers = new IntegerGenerator[partitions];
+      partitionRandomSelector = new UniformIntegerGenerator(0,partitions-1);
+      keychoosersPool = new Vector<SeqGenerator>();
+      globalSeqGenerator = new GlobalSeqGenerator();
+      int partitionSize = recordcount / partitions;
+      //end of MegaOmid-specific variable initializations
 
-		transactioninsertkeysequence=new CounterGenerator(recordcount);
-		if (requestdistrib.compareTo("uniform")==0)
+		transactioninsertkeysequence = new CounterGenerator(recordcount);
+		if (requestdistrib.compareTo("uniform") == 0)
 		{
-			keychooser=new UniformIntegerGenerator(0,recordcount-1);
+			keychooser = new UniformIntegerGenerator(0,recordcount-1);
 			//initialize the key generators related to global transactions
 			int end = 0;
 			for (int i = 1; i <= partitions; i++) {
@@ -399,7 +441,7 @@ public class CoreWorkload extends Workload
 				partitionedKeychoosers[i-1] = new UniformIntegerGenerator(start,end-1);
 			}
 		}
-		else if (requestdistrib.compareTo("zipfian")==0)
+		else if (requestdistrib.compareTo("zipfian") == 0)
 		{
 			//it does this by generating a random "next key" in part by taking the modulus over the number of keys
 			//if the number of keys changes, this would shift the modulus, and we don't want that to change which keys are popular
@@ -432,7 +474,7 @@ public class CoreWorkload extends Workload
 				end = start + partitionSize;
 				if (i == partitions)
 					end = recordcount;
-				//Here partitioning does not help since it is supposed to be around latest partition anyway
+				//Note: Here partitioning does not help since it is supposed to be around latest partition anyway
 				partitionedKeychoosers[i-1] = new SkewedLatestGenerator(transactioninsertkeysequence);
 			}
 		}
@@ -569,7 +611,12 @@ public class CoreWorkload extends Workload
 		return true;
 	}
 
-	//return a thread-specific state
+	/** 
+    * return a thread-specific state
+    * We override this method to pin a sequence generator to each thread.
+    * This is to help the MegaOmid library to predict the status oracle 
+    * needed by the transactions coming from each thread.
+    */
 	@Override
 	public Object initThread(Properties p, int mythreadid, int threadcount) throws WorkloadException
 	{
@@ -578,6 +625,10 @@ public class CoreWorkload extends Workload
 		return state;
 	}
 
+   /**
+    * The thread-specific state.
+    * We are using that in MegaOmid to generate sequentail workload for each thread.
+    */
 	class ThreadWorkloadState {
 		int intGeneratorIndex = -1;//use this to have a separate generator per each thread
 		int partition = -1;//the assigned partition to this client
@@ -599,8 +650,10 @@ public class CoreWorkload extends Workload
 		return String.format(format,keynum);
 	}
 
-	//A class to generate sequentail row ids
-   //It is used to get the highest throughput out of Hbase
+	/**
+    * A class to generate sequentail row ids
+    * It is used to get the highest throughput out of Hbase
+    */
 	class SeqGenerator extends IntegerGenerator {
 		public int nextInt() {
 			int lastint = lastInt();
@@ -612,7 +665,10 @@ public class CoreWorkload extends Workload
 		}
 	}
 
-	//This class generates global row ids but still it sticks to the sequential order history
+	/** 
+    * This class generates global row ids 
+    * but still it sticks to the sequential order history
+    */
 	class GlobalSeqGenerator extends IntegerGenerator {
 		public int nextInt() {
 			int index = keychooser.nextInt();
@@ -625,40 +681,52 @@ public class CoreWorkload extends Workload
 
 	/**
 	 * randomly choose a partition key generator or the global key generator
+    * used in MegaOmid
 	 */
-		/*
 	IntegerGenerator selectAKeyChooser(Object threadState) {
-		if (partitionedKeychoosers.length == 1) {//no need for partitioning
-			return keychooser;
-		}
-		if (tws.lastTxnWasGlobal) {//redo global txn
-			tws.lastTxnWasGlobal = false;//reset it
-			//System.out.println("GLOBAL");
-			return keychooser;
-		}
-		if (globalTxnRndSelector.nextInt() < globalchance) {
-			tws.lastTxnWasGlobal = true;
-			//System.out.println("GLOBAL");
-			return keychooser;
-		}
-			//System.out.println("LOCAL " + tws.partition);
-		return partitionedKeychoosers[tws.partition];
-		//return keychooser;
-	};
-		*/
-	//In this implementation, since we use sequentail rows instead of random, we do not have to 
-	//partition the keys based on status oracle partitions. Instread we partition them based on 
-	//the number of clients, so that the load on HBase will be balanced. This automatically balances
-	//the load on the status oracles as well (while keeping the traffic parition-local)
-	IntegerGenerator selectAKeyChooser(Object threadState) {
+       if (partitionedKeychoosers.length == 1) {//no need for partitioning
+           return keychooser;
+       }
+       // return selectAPartitionedKeyChooser(threadState);
+       // To squeeze the highest performance from HBase, we replace this
+       // implementation with the following the generates sequential workload.
+       return selectASequentialKeyChooser(threadState);
+   }
+
+   /**
+    * In this implementation, each key use generates random numbers 
+    * but limited to a partition range
+    */
+   IntegerGenerator selectAPartitionedKeyChooser(Object threadState) {
+       ThreadWorkloadState tws = (ThreadWorkloadState)threadState;
+       if (tws.lastTxnWasGlobal) {//redo global txn
+           tws.lastTxnWasGlobal = false;//reset it
+           //System.out.println("GLOBAL");
+           return keychooser;
+       }
+       if (globalTxnRndSelector.nextInt() < globalchance) {
+           tws.lastTxnWasGlobal = true;
+           //System.out.println("GLOBAL");
+           return keychooser;
+       }
+       //System.out.println("LOCAL " + tws.partition);
+       return partitionedKeychoosers[tws.partition];
+       //return keychooser;
+   };
+
+   /**
+	 * In this implementation, since we use sequentail rows instead of random, 
+    * we do not have to partition the keys based on status oracle partitions. 
+    * Instread we partition them based on the number of clients, 
+    * so that the load on HBase will be balanced. This automatically balances
+	 * the load on the status oracles as well (while keeping the traffic parition-local)
+    */
+	IntegerGenerator selectASequentialKeyChooser(Object threadState) {
 		ThreadWorkloadState tws = (ThreadWorkloadState)threadState;
 		if (tws.intGeneratorIndex == -1) {
 			newSeqGenerator(tws);
 		}
 		IntegerGenerator localIntGenerator = keychoosersPool.elementAt(tws.intGeneratorIndex);
-		if (partitionedKeychoosers.length == 1) {//no need for partitioning
-			return localIntGenerator;
-		}
 		if (tws.lastTxnWasGlobal) {//redo global txn
 			tws.lastTxnWasGlobal = false;//reset it
 			//System.out.println("GLOBAL");
@@ -672,6 +740,10 @@ public class CoreWorkload extends Workload
 		//return keychooser;
 	};
 
+   /**
+    * Used in MegaOmid.
+    * create a new seqGenerator and init it to start from a random number
+    */
 	synchronized void newSeqGenerator(ThreadWorkloadState tws) {
 		SeqGenerator intGenerator = new SeqGenerator();
 		int randInt = keychooser.nextInt();
@@ -684,6 +756,7 @@ public class CoreWorkload extends Workload
 	public void doTransactionRead(DB db, Object threadState)
 	{
 		//to enable keys that are likely to be limited to a partition
+      //used in MegaOmid
 		IntegerGenerator selectedKeychooser = selectAKeyChooser(threadState);
 		//choose a random key
 		int keynum;
